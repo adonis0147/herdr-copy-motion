@@ -16,6 +16,6 @@ command = ["target/release/herdr-copy-motion", "toggle"]
 
 [[panes]]
 id = "viewer"
-title = "Copy mode"
+title = "Copy Mode"
 placement = "overlay"
 command = ["target/release/herdr-copy-motion", "view"]

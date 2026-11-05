@@ -38,7 +38,7 @@ You can also test entry with `herdr plugin action invoke herdr-copy-motion.toggl
 
 While copy mode is open, its tab is temporarily named `COPY`. Herdr appends its
 normal zoom badge, so the tab bar reads `COPY Z`; the overlay pane title remains
-`Copy mode`. The previous tab name is restored on normal exit, including viewer
+`Copy Mode`. The previous tab name is restored on normal exit, including viewer
 errors, unless you manually renamed the tab in the meantime.
 
 No user configuration is changed automatically by this project.
