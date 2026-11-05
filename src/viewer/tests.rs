@@ -279,6 +279,140 @@ fn reversed_selection_copies_graphemes_once_without_ansi() {
 }
 
 #[test]
+fn block_selection_uses_the_same_rectangle_in_all_four_directions() {
+    for (anchor, cursor) in [
+        ((0, 1), (2, 3)),
+        ((0, 3), (2, 1)),
+        ((2, 1), (0, 3)),
+        ((2, 3), (0, 1)),
+    ] {
+        let mut v = viewer("abcdef\nABCDEF\n012345", 3, 8);
+        v.cursor = anchor;
+        v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        v.cursor = cursor;
+        assert_eq!(v.selection_mode, SelectionMode::Block);
+        assert_eq!(v.selected_text(), "bcd\nBCD\n123");
+        for row in 0..3 {
+            for col in 0..8 {
+                assert_eq!(
+                    v.selected(row, col),
+                    (1..=3).contains(&col),
+                    "cell {row},{col}"
+                );
+            }
+        }
+        assert!(matches!(press(&mut v, 'y'), Action::Copy));
+    }
+}
+
+#[test]
+fn block_selection_preserves_trailing_spaces_and_blank_rows() {
+    let mut v = viewer("abcd\nx\n\nab  ", 4, 6);
+    v.cursor = (0, 1);
+    v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    v.cursor = (3, 3);
+    assert_eq!(v.selected_text(), "bcd\n   \n   \nb  ");
+    assert!(matches!(
+        v.input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Action::Copy
+    ));
+}
+
+#[test]
+fn block_selection_toggle_preserves_the_existing_anchor() {
+    let mut v = viewer("abcd\nABCD", 2, 6);
+    v.cursor = (0, 1);
+    press(&mut v, 'v');
+    press(&mut v, 'j');
+    press(&mut v, 'l');
+    press(&mut v, 'l');
+    assert_eq!(v.selected_text(), "bcd\nABCD");
+    v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    assert_eq!(v.anchor, Some((0, 1)));
+    assert_eq!(v.selected_text(), "bcd\nBCD");
+    v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    assert_eq!(v.selection_mode, SelectionMode::Character);
+    assert_eq!(v.anchor, Some((0, 1)));
+    assert_eq!(v.selected_text(), "bcd\nABCD");
+    press(&mut v, 'V');
+    assert_eq!(v.selection_mode, SelectionMode::Line);
+    v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    assert_eq!(v.selection_mode, SelectionMode::Block);
+    assert_eq!(v.selected_text(), "D");
+}
+
+#[test]
+fn cancelling_block_selection_preserves_existing_cancel_controls() {
+    for key in [KeyCode::Char('v'), KeyCode::Char(' '), KeyCode::Esc] {
+        let mut v = viewer("one\ntwo", 2, 6);
+        v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        press(&mut v, 'j');
+        assert!(matches!(
+            v.input(KeyEvent::new(key, KeyModifiers::NONE)),
+            Action::Continue
+        ));
+        assert!(v.anchor.is_none());
+        assert!(!v.selected(0, 0));
+        assert_eq!(v.selected_text(), "");
+        v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        assert_eq!(
+            v.selection_mode,
+            SelectionMode::Block,
+            "a new selection must start in block mode"
+        );
+        assert_eq!(v.anchor, Some(v.cursor));
+    }
+}
+
+#[test]
+fn block_selection_keeps_touched_wide_glyphs_and_combining_marks_whole() {
+    for (column, expected) in [(0, "a\n界\na"), (1, "b\n界\ne\u{301}")] {
+        let mut v = viewer("abcde\n\x1b[48;2;20;80;30m界xy\x1b[0m\nae\u{301}bc", 3, 6);
+        v.selection_style = "0;97;44".into();
+        v.cursor = (0, column);
+        v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        v.cursor = (2, column);
+        assert_eq!(v.selected_text(), expected);
+        assert!(v.selected(1, 0));
+        assert!(v.selected(1, 1));
+        assert!(!v.selected(1, 2));
+        let mut output = Vec::new();
+        v.draw(&mut output, (6, 3)).unwrap();
+        let mut replay = vt100::Parser::new(4, 6, 0);
+        replay.process(&output);
+        assert_eq!(replay.screen().cell(1, 0).unwrap().contents(), "界");
+        assert_eq!(
+            replay.screen().cell(1, 0).unwrap().bgcolor(),
+            vt100::Color::Idx(4)
+        );
+        v.input(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        output.clear();
+        v.draw(&mut output, (6, 3)).unwrap();
+        replay.process(&output);
+        assert_eq!(
+            replay.screen().cell(1, 0).unwrap().bgcolor(),
+            vt100::Color::Rgb(20, 80, 30)
+        );
+    }
+}
+
+#[test]
+fn block_selection_survives_paging_character_finds_and_viewport_clipping() {
+    let mut v = viewer("abcde\nABCDE\n01234\nvwxyz\n.....\nlast", 6, 8);
+    v.cursor = (0, 1);
+    v.draw(&mut Vec::new(), (8, 2)).unwrap();
+    v.input(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    v.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    v.input(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    press(&mut v, 'l');
+    press(&mut v, 'f');
+    press(&mut v, 'y');
+    v.draw(&mut Vec::new(), (2, 2)).unwrap();
+    assert_eq!(v.offset, (2, 3));
+    assert_eq!(v.selected_text(), "bcd\nBCD\n123\nwxy");
+}
+
+#[test]
 fn linewise_selection_and_escape() {
     let mut v = viewer("one\ntwo", 2, 8);
     press(&mut v, 'V');

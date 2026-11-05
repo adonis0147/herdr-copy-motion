@@ -90,7 +90,7 @@ struct Viewer {
     parser: vt100::Parser,
     cursor: (u16, u16), // row, column, in source cells (never border coordinates)
     anchor: Option<(u16, u16)>,
-    linewise: bool,
+    selection_mode: SelectionMode,
     offset: (u16, u16), // horizontal, vertical
     pending_g: bool,
     pending_find: Option<char>,
@@ -98,6 +98,13 @@ struct Viewer {
     height: u16,
     cursor_style: String,
     selection_style: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectionMode {
+    Character,
+    Line,
+    Block,
 }
 
 #[derive(Clone, Copy)]
@@ -126,7 +133,7 @@ impl Viewer {
             snapshot,
             parser,
             anchor: None,
-            linewise: false,
+            selection_mode: SelectionMode::Character,
             pending_g: false,
             pending_find: None,
             last_find: None,
@@ -159,6 +166,15 @@ impl Viewer {
             self.pending_g = false;
             match key.code {
                 KeyCode::Char('c') => return Action::Quit,
+                KeyCode::Char('v') => {
+                    self.selection_mode =
+                        if self.anchor.is_some() && self.selection_mode == SelectionMode::Block {
+                            SelectionMode::Character
+                        } else {
+                            SelectionMode::Block
+                        };
+                    self.anchor.get_or_insert(self.cursor);
+                }
                 KeyCode::Char('u') => self.page(-i32::from((self.height / 2).max(1))),
                 KeyCode::Char('d') => self.page(i32::from((self.height / 2).max(1))),
                 KeyCode::Char('b') => self.page(-i32::from(self.height)),
@@ -184,11 +200,11 @@ impl Viewer {
                     } else {
                         Some(self.cursor)
                     };
-                    self.linewise = false;
+                    self.selection_mode = SelectionMode::Character;
                 }
                 KeyCode::Char('V') => {
                     self.anchor = Some(self.cursor);
-                    self.linewise = true;
+                    self.selection_mode = SelectionMode::Line;
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
                     self.cursor.1 = self.cursor.1.saturating_sub(1)
@@ -376,10 +392,24 @@ impl Viewer {
             return false;
         };
         let (start, end) = (anchor.min(self.cursor), anchor.max(self.cursor));
-        if self.linewise {
-            row >= start.0 && row <= end.0
-        } else {
-            (row, col) >= start && (row, col) <= end
+        if row < start.0 || row > end.0 {
+            return false;
+        }
+        match self.selection_mode {
+            SelectionMode::Character => (row, col) >= start && (row, col) <= end,
+            SelectionMode::Line => true,
+            SelectionMode::Block => {
+                let left = anchor.1.min(self.cursor.1);
+                let right = anchor.1.max(self.cursor.1);
+                // A rectangle touching either half includes the whole wide glyph.
+                let first = if self.cell(row, col).is_wide_continuation() {
+                    col.saturating_sub(1)
+                } else {
+                    col
+                };
+                let last = first + u16::from(self.cell(row, first).is_wide());
+                first <= right && last >= left
+            }
         }
     }
 
@@ -401,10 +431,14 @@ impl Viewer {
                     }
                 }
             }
-            lines.push(text.trim_end().to_owned());
+            lines.push(if self.selection_mode == SelectionMode::Block {
+                text
+            } else {
+                text.trim_end().to_owned()
+            });
         }
         let mut text = lines.join("\n");
-        if self.linewise {
+        if self.selection_mode == SelectionMode::Line {
             text.push('\n');
         }
         text

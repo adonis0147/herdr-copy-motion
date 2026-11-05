@@ -56,6 +56,7 @@ No user configuration is changed automatically by this project.
 | Mouse wheel | Scroll up/down three rows |
 | `v`, Space | Toggle character selection |
 | `V` | Start line selection |
+| Ctrl+V | Start block selection, or toggle rectangular/character selection without moving its anchor |
 | `y`, Enter | Copy the active selection and close |
 | Escape | Cancel selection, or close if none |
 | `q`, Ctrl+C | Close without copying |
@@ -85,11 +86,18 @@ painted frame while scrolling. Entry includes alternate-screen setup in that
 transaction. On exit, the disposable overlay retains its last frame until Herdr
 removes it, rather than switching to its empty main screen.
 
+Block selection uses an inclusive rectangle between the anchor and cursor, in any
+direction. It works with the same motions and paging keys as other selections.
+A rectangle touching either half of a wide glyph includes the whole glyph;
+combining marks stay with their base character. `v`, Space, or Escape cancels the
+selection as before.
+
 Copy uses OSC 52, forwarded by Herdr to the attached terminal. Clipboard support
 and permissions depend on that terminal. There is no confirmation from the system
-clipboard. Copies are limited to 1 MiB, contain text rather than ANSI, trim trailing
-whitespace on selected rows, and insert newlines between captured rows. Line
-selection adds a final newline.
+clipboard. Copies are limited to 1 MiB, contain text rather than ANSI, and insert
+newlines between captured rows. Character and line selections trim trailing
+whitespace; block selections preserve spaces and blank cells within the rectangle.
+Only line selection adds a final newline.
 
 ## Rendering contract and compromises
 
