@@ -40,6 +40,7 @@ impl Host {
             while !finished.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
@@ -74,6 +75,13 @@ impl Host {
             .env("HERDR_PLUGIN_STATE_DIR", &self.root)
             .output()
             .unwrap()
+    }
+
+    fn viewer_marker(&self) -> PathBuf {
+        let mut hash = DefaultHasher::new();
+        self.socket.to_str().unwrap().hash(&mut hash);
+        let pane: String = b"w1:p1".iter().map(|b| format!("{b:02x}")).collect();
+        self.root.join(format!("viewer-{:x}-{pane}", hash.finish()))
     }
 }
 
@@ -116,6 +124,8 @@ fn captures_before_opening_with_and_without_borders() {
                     let snapshot: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
                     assert_eq!(snapshot["cols"], 8);
                     assert_eq!(snapshot["rows"], 3);
+                    assert_eq!(snapshot["viewport_rows"], 3);
+                    assert_eq!(snapshot["viewport_top"], 0);
                     assert_eq!(snapshot["ansi"], "\u{1b}[42m        \u{1b}[0m");
                     assert_eq!(
                         fs::metadata(path).unwrap().permissions().mode() & 0o777,
@@ -133,6 +143,54 @@ fn captures_before_opening_with_and_without_borders() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+#[test]
+fn captures_visible_before_opening_and_defers_history_until_the_source_is_hidden() {
+    for fail in [false, true] {
+        let host = Host::new(move |request| {
+            let result = match request["method"].as_str().unwrap() {
+                "pane.get" => json!({"pane": {"terminal_id": "source-terminal", "scroll": {
+                    "viewport_rows": 3, "offset_from_bottom": 1, "max_offset_from_bottom": 5
+                }}}),
+                "pane.layout" => {
+                    json!({"layout": {"panes": [{"pane_id": "w1:p1", "rect": {"width": 8, "height": 3}}]}})
+                }
+                "pane.read" => {
+                    assert_eq!(request["params"]["source"], "visible");
+                    if fail {
+                        return json!({"id": request["id"], "error": {"message": "read failed"}});
+                    }
+                    json!({"read": {"format": "ansi", "text": "4\n5\n6\n", "truncated": false}})
+                }
+                "plugin.pane.open" => {
+                    assert!(!fail);
+                    let path = request["params"]["env"]["COPY_MOTION_SNAPSHOT"]
+                        .as_str()
+                        .unwrap();
+                    let s: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                    assert_eq!(s["rows"], 3);
+                    assert_eq!(s["viewport_top"], 0);
+                    assert_eq!(s["ansi"], "4\n5\n6\n");
+                    assert_eq!(s["source"]["terminal_id"], "source-terminal");
+                    assert_eq!(s["source"]["scroll"]["max_offset_from_bottom"], 5);
+                    json!({})
+                }
+                method => panic!("unexpected request: {method}"),
+            };
+            reply(&request, result)
+        });
+        let output = host.toggle();
+        assert_eq!(
+            output.status.success(),
+            !fail,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if fail {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("read failed"));
+        }
     }
 }
 
@@ -157,23 +215,24 @@ fn refuses_plaintext_export_instead_of_losing_colors() {
 }
 
 #[test]
-fn toggling_viewer_closes_it_instead_of_capturing_it() {
+fn toggling_viewer_queues_quit_instead_of_interrupting_history_restoration() {
     let host = Host::new(|request| {
         assert_eq!(request["params"]["pane_id"], "w1:p1");
         let result = match request["method"].as_str().unwrap() {
             "pane.get" => json!({"pane": {"terminal_id": "viewer-terminal"}}),
-            "plugin.pane.close" => json!({"type": "plugin_pane_closed"}),
+            "pane.send-keys" => {
+                assert_eq!(request["params"]["keys"], json!(["q"]));
+                json!({})
+            }
             method => panic!("unexpected request: {method}"),
         };
         reply(&request, result)
     });
-    let mut hash = DefaultHasher::new();
-    host.socket.to_str().unwrap().hash(&mut hash);
-    let pane: String = b"w1:p1".iter().map(|b| format!("{b:02x}")).collect();
-    let marker = host.root.join(format!("viewer-{:x}-{pane}", hash.finish()));
+    let marker = host.viewer_marker();
     fs::write(&marker, b"viewer-terminal").unwrap();
     assert!(host.toggle().status.success());
-    assert!(!marker.exists());
+    // The viewer removes its own marker when the queued quit is handled.
+    assert!(marker.exists());
 }
 
 #[test]
@@ -188,15 +247,59 @@ fn stale_marker_cannot_close_a_different_terminal() {
         }
         method => panic!("must not close another terminal: {method}"),
     });
-    let mut hash = DefaultHasher::new();
-    host.socket.to_str().unwrap().hash(&mut hash);
-    let pane: String = b"w1:p1".iter().map(|b| format!("{b:02x}")).collect();
-    let marker = host.root.join(format!("viewer-{:x}-{pane}", hash.finish()));
+    let marker = host.viewer_marker();
     fs::write(&marker, b"old-terminal").unwrap();
     let output = host.toggle();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("capture reached safely"));
     assert!(!marker.exists());
+}
+
+#[test]
+fn corrupt_viewer_marker_does_not_open_a_duplicate_overlay() {
+    let host = Host::new(|request| panic!("must reject the marker before any API call: {request}"));
+    fs::write(host.viewer_marker(), [0xff]).unwrap();
+    assert!(!host.toggle().status.success());
+    assert!(host.viewer_marker().exists());
+}
+
+#[test]
+fn replaced_source_terminal_retries_capture_before_opening() {
+    let mut gets = 0;
+    let mut reads = 0;
+    let host = Host::new(move |request| {
+        let result = match request["method"].as_str().unwrap() {
+            "pane.get" => {
+                gets += 1;
+                json!({"pane": {"terminal_id": if gets == 1 { "old" } else { "new" }, "scroll": {"viewport_rows": 3}}})
+            }
+            "pane.layout" => {
+                json!({"layout": {"panes": [{"pane_id": "w1:p1", "rect": {"width": 8, "height": 3}}]}})
+            }
+            "pane.read" => {
+                reads += 1;
+                json!({"read": {"format": "ansi", "truncated": false, "text": if reads == 1 { "old" } else { "new" }}})
+            }
+            "plugin.pane.open" => {
+                assert_eq!(reads, 2);
+                let path = request["params"]["env"]["COPY_MOTION_SNAPSHOT"]
+                    .as_str()
+                    .unwrap();
+                let snapshot: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                assert_eq!(snapshot["ansi"], "new");
+                assert_eq!(snapshot["source"]["terminal_id"], "new");
+                json!({})
+            }
+            method => panic!("unexpected request: {method}"),
+        };
+        reply(&request, result)
+    });
+    let output = host.toggle();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
