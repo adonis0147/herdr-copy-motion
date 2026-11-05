@@ -44,6 +44,9 @@ No user configuration is changed automatically by this project.
 | --- | --- |
 | `h j k l`, arrows | Move one cell/row |
 | `w b e` | Next word start, previous word start, next word end |
+| `f<char>` / `F<char>` | Find the next / previous occurrence on the current row |
+| `t<char>` / `T<char>` | Stop just before / after the next / previous occurrence |
+| `;` / `,` | Repeat the last character find in its original / opposite direction |
 | `0`, Home | First column |
 | `^` | First nonblank cell |
 | `$`, End | Last nonblank cell |
@@ -57,6 +60,15 @@ No user configuration is changed automatically by this project.
 | Escape | Cancel selection, or close if none |
 | `q`, Ctrl+C | Close without copying |
 | `prefix+shift+s` | Close via the plugin action |
+
+Character finds wait for one literal character, including command keys such as
+`q`, `v`, or Space. They stay on the current captured screen row and leave the
+cursor unchanged if no match exists. Escape cancels a pending find without closing
+copy mode or clearing a selection. Repeat keys preserve the original find direction;
+repeated `t`/`T` advances past the previous target rather than getting stuck beside
+it. These motions extend active selections and keep wide glyphs/combining marks
+intact; matching uses a cell's base character. Numeric counts and operator-pending
+commands are not implemented.
 
 Known limitation: the cursor currently starts at the bottom-left of the original
 viewport, not at the source application's current cursor. Herdr 0.9.5's plugin API

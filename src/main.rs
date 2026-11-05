@@ -38,8 +38,11 @@ fn toggle() -> Result<()> {
         Ok(terminal_id) => {
             let current = rpc("pane.get", json!({"pane_id": pane_id}))?;
             if current["pane"]["terminal_id"].as_str() == Some(terminal_id.as_str()) {
-                // Let the viewer restore a hidden-source capture before exiting.
-                rpc("pane.send-keys", json!({"pane_id": pane_id, "keys": ["q"]}))?;
+                // Raw Ctrl+C waits for capture restoration and cannot become a find target.
+                rpc(
+                    "pane.send_keys",
+                    json!({"pane_id": pane_id, "keys": ["ctrl+c"]}),
+                )?;
                 return Ok(());
             }
             fs::remove_file(&marker)?;

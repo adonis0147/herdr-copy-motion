@@ -71,6 +71,161 @@ fn motions_clamp_and_skip_wide_continuations() {
 }
 
 #[test]
+fn character_find_and_till_motions_are_line_local() {
+    for (command, start, expected) in [('f', 0, 2), ('F', 6, 2), ('t', 0, 1), ('T', 6, 3)] {
+        let mut v = viewer("a:x:y:x\nx", 2, 8);
+        v.cursor.1 = start;
+        assert!(matches!(press(&mut v, command), Action::Continue));
+        assert_eq!(v.cursor, (0, start));
+        press(&mut v, 'x');
+        assert_eq!(v.cursor, (0, expected), "{command}x");
+    }
+    let mut v = viewer("abc\naz", 2, 8);
+    press(&mut v, 'f');
+    press(&mut v, 'z');
+    assert_eq!(v.cursor, (0, 0));
+    press(&mut v, 'j');
+    press(&mut v, ';');
+    assert_eq!(v.cursor, (1, 1), "a failed find is still remembered");
+}
+
+#[test]
+fn character_find_repeats_preserve_the_original_direction() {
+    let mut v = viewer("x ax bx cx", 1, 10);
+    press(&mut v, ';');
+    press(&mut v, ',');
+    assert_eq!(v.cursor, (0, 0));
+    press(&mut v, 'f');
+    press(&mut v, 'x');
+    for (key, expected) in [(';', 6), (',', 3), (';', 6)] {
+        press(&mut v, key);
+        assert_eq!(v.cursor, (0, expected));
+    }
+    press(&mut v, 'F');
+    press(&mut v, 'x');
+    assert_eq!(v.cursor, (0, 3));
+    for (key, expected) in [(';', 0), (',', 3), (';', 0)] {
+        press(&mut v, key);
+        assert_eq!(v.cursor, (0, expected));
+    }
+}
+
+#[test]
+fn till_repeats_advance_past_the_previous_target() {
+    for (command, start, target, destinations) in [
+        ('t', 0, 'x', vec![1, 3, 5, 3, 5]),
+        ('T', 6, 'x', vec![5, 3, 1, 3, 1]),
+    ] {
+        let mut v = viewer("x-x-x-x", 1, 7);
+        v.cursor.1 = start;
+        press(&mut v, command);
+        press(&mut v, target);
+        assert_eq!(v.cursor.1, destinations[0]);
+        for (key, expected) in [';', ';', ',', ';'].into_iter().zip(&destinations[1..]) {
+            press(&mut v, key);
+            assert_eq!(v.cursor.1, *expected, "{command}x then {key}");
+        }
+    }
+    for (text, start, command, expected) in [("ax-x", 0, 't', 2), ("x-xa", 3, 'T', 1)] {
+        let mut v = viewer(text, 1, 4);
+        v.cursor.1 = start;
+        press(&mut v, command);
+        press(&mut v, 'x');
+        assert_eq!(v.cursor.1, start, "an adjacent till target does not move");
+        press(&mut v, ';');
+        assert_eq!(v.cursor.1, expected);
+    }
+}
+
+#[test]
+fn character_find_targets_are_literal_including_command_keys_and_spaces() {
+    let text = "aqyvft;,g z";
+    for target in ['q', 'y', 'v', 'f', 't', ';', ',', 'g', ' '] {
+        let mut v = viewer(text, 1, 16);
+        press(&mut v, 'f');
+        assert!(matches!(press(&mut v, target), Action::Continue));
+        assert_eq!(usize::from(v.cursor.1), text.find(target).unwrap());
+        assert!(v.anchor.is_none());
+    }
+    let mut v = viewer("aX", 1, 8);
+    press(&mut v, 'f');
+    v.input(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT));
+    assert_eq!(v.cursor, (0, 1));
+    press(&mut v, 'f');
+    press(&mut v, ' ');
+    assert_eq!(
+        v.cursor,
+        (0, 1),
+        "implicit blank padding is not a character target"
+    );
+}
+
+#[test]
+fn character_find_preserves_wide_glyphs_and_selection() {
+    let mut v = viewer("a界b界c", 1, 9);
+    press(&mut v, 'v');
+    press(&mut v, 'f');
+    press(&mut v, '界');
+    assert_eq!(v.cursor, (0, 1));
+    assert_eq!(v.selected_text(), "a界");
+    press(&mut v, ';');
+    assert_eq!(v.cursor, (0, 4));
+    assert_eq!(v.selected_text(), "a界b界");
+    press(&mut v, ',');
+    assert_eq!(v.cursor, (0, 1));
+    v.cursor = (0, 6);
+    press(&mut v, 'T');
+    press(&mut v, '界');
+    assert_eq!(v.cursor, (0, 6));
+    press(&mut v, ';');
+    assert_eq!(v.cursor, (0, 3), "T skips the whole target glyph");
+    let mut v = viewer("界x", 1, 3);
+    press(&mut v, 't');
+    press(&mut v, 'x');
+    assert_eq!(
+        v.cursor,
+        (0, 0),
+        "t stops on the leading cell of the prior wide glyph"
+    );
+    press(&mut v, ';');
+    assert_eq!(v.cursor, (0, 0));
+    let mut v = viewer("a e\u{301}", 1, 6);
+    press(&mut v, 'v');
+    press(&mut v, 'f');
+    press(&mut v, 'e');
+    assert_eq!(v.selected_text(), "a e\u{301}");
+}
+
+#[test]
+fn escape_cancels_pending_character_find_without_closing_or_clearing_selection() {
+    let mut v = viewer("abc", 1, 4);
+    press(&mut v, 'v');
+    press(&mut v, 'f');
+    assert!(matches!(
+        v.input(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        Action::Continue
+    ));
+    assert!(v.anchor.is_some());
+    assert!(v.pending_find.is_none());
+    press(&mut v, 'l');
+    assert_eq!(v.cursor, (0, 1));
+    press(&mut v, 'T');
+    assert!(matches!(
+        v.input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Action::Continue
+    ));
+    assert!(
+        v.anchor.is_some(),
+        "Enter while awaiting a target must not copy"
+    );
+    press(&mut v, 'f');
+    assert!(matches!(
+        v.input(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Action::Quit
+    ));
+}
+
+#[test]
 fn word_and_line_motions() {
     let mut v = viewer("  one two.three", 1, 20);
     press(&mut v, '^');

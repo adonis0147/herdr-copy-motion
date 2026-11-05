@@ -220,8 +220,8 @@ fn toggling_viewer_queues_quit_instead_of_interrupting_history_restoration() {
         assert_eq!(request["params"]["pane_id"], "w1:p1");
         let result = match request["method"].as_str().unwrap() {
             "pane.get" => json!({"pane": {"terminal_id": "viewer-terminal"}}),
-            "pane.send-keys" => {
-                assert_eq!(request["params"]["keys"], json!(["q"]));
+            "pane.send_keys" => {
+                assert_eq!(request["params"]["keys"], json!(["ctrl+c"]));
                 json!({})
             }
             method => panic!("unexpected request: {method}"),

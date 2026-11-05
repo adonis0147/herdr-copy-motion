@@ -93,9 +93,18 @@ struct Viewer {
     linewise: bool,
     offset: (u16, u16), // horizontal, vertical
     pending_g: bool,
+    pending_find: Option<char>,
+    last_find: Option<CharacterFind>,
     height: u16,
     cursor_style: String,
     selection_style: String,
+}
+
+#[derive(Clone, Copy)]
+struct CharacterFind {
+    target: char,
+    backward: bool,
+    till: bool,
 }
 
 enum Action {
@@ -119,14 +128,35 @@ impl Viewer {
             anchor: None,
             linewise: false,
             pending_g: false,
+            pending_find: None,
+            last_find: None,
             cursor_style: styles.cursor,
             selection_style: styles.selection,
         }
     }
 
     fn input(&mut self, key: KeyEvent) -> Action {
+        if let Some(command) = self.pending_find.take() {
+            self.pending_g = false;
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                return Action::Quit;
+            }
+            if let KeyCode::Char(target) = key.code
+                && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+            {
+                let find = CharacterFind {
+                    target,
+                    backward: matches!(command, 'F' | 'T'),
+                    till: matches!(command, 't' | 'T'),
+                };
+                self.last_find = Some(find);
+                self.find_character(find, false);
+            }
+            return Action::Continue;
+        }
         let previous = self.cursor;
         if key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.pending_g = false;
             match key.code {
                 KeyCode::Char('c') => return Action::Quit,
                 KeyCode::Char('u') => self.page(-i32::from((self.height / 2).max(1))),
@@ -189,6 +219,17 @@ impl Viewer {
                 KeyCode::Char('w') => self.word_motion(false, false),
                 KeyCode::Char('b') => self.word_motion(true, false),
                 KeyCode::Char('e') => self.word_motion(false, true),
+                KeyCode::Char(command @ ('f' | 'F' | 't' | 'T')) => {
+                    self.pending_find = Some(command);
+                }
+                KeyCode::Char(';' | ',') => {
+                    if let Some(mut find) = self.last_find {
+                        if key.code == KeyCode::Char(',') {
+                            find.backward = !find.backward;
+                        }
+                        self.find_character(find, true);
+                    }
+                }
                 _ => {}
             }
         }
@@ -208,6 +249,40 @@ impl Viewer {
             }
         }
         Action::Continue
+    }
+
+    fn find_character(&mut self, find: CharacterFind, repeat: bool) {
+        let (row, start) = self.cursor;
+        for distance in 1..self.snapshot.cols {
+            let column = if find.backward {
+                start.checked_sub(distance)
+            } else {
+                start
+                    .checked_add(distance)
+                    .filter(|&col| col < self.snapshot.cols)
+            };
+            let Some(column) = column else { break };
+            let cell = self.cell(row, column);
+            if cell.is_wide_continuation() || !cell.contents().starts_with(find.target) {
+                continue;
+            }
+            let mut destination = if !find.till {
+                column
+            } else if find.backward {
+                column + if cell.is_wide() { 2 } else { 1 }
+            } else {
+                column - 1
+            };
+            if self.cell(row, destination).is_wide_continuation() {
+                destination = destination.saturating_sub(1);
+            }
+            // Repeating t/T must pass the adjacent target that stopped the last motion.
+            if repeat && destination == start {
+                continue;
+            }
+            self.cursor.1 = destination;
+            return;
+        }
     }
 
     fn page(&mut self, delta: i32) {
