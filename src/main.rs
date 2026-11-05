@@ -164,8 +164,41 @@ fn view() -> Result<()> {
     let terminal_id = current["pane"]["terminal_id"]
         .as_str()
         .ok_or("viewer terminal ID missing")?;
+    let tab_id = current["pane"]["tab_id"]
+        .as_str()
+        .ok_or("viewer tab ID missing")?;
     fs::write(&marker, terminal_id)?;
-    let result = viewer::run(snapshot);
+    let result = with_copy_tab(tab_id, rpc, || viewer::run(snapshot));
     let _ = fs::remove_file(marker);
     result
+}
+
+fn with_copy_tab(
+    tab_id: &str,
+    mut request: impl FnMut(&str, Value) -> Result<Value>,
+    view: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let before = request("tab.get", json!({"tab_id": tab_id}))?;
+    let previous = before["tab"]["label"].as_str().ok_or("tab label missing")?;
+    if previous == "COPY" {
+        return view();
+    }
+    request("tab.rename", json!({"tab_id": tab_id, "label": "COPY"}))?;
+    let result = view();
+    let restored = (|| -> Result<()> {
+        let current = request("tab.get", json!({"tab_id": tab_id}))?;
+        // Do not overwrite a name the user changed while copy mode was open.
+        if current["tab"]["label"] == "COPY" {
+            request("tab.rename", json!({"tab_id": tab_id, "label": previous}))?;
+        }
+        Ok(())
+    })();
+    match (result, restored) {
+        (Err(view), Err(restore)) => {
+            Err(format!("{view}; failed to restore tab name: {restore}").into())
+        }
+        (Err(error), _) => Err(error),
+        (_, Err(error)) => Err(format!("failed to restore tab name: {error}").into()),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }

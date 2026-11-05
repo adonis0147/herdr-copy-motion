@@ -36,6 +36,11 @@ focused, invoking it again queues a quit for that viewer and restores the previo
 pane after any in-progress history capture has restored the source scroll offset.
 You can also test entry with `herdr plugin action invoke herdr-copy-motion.toggle`.
 
+While copy mode is open, its tab is temporarily named `COPY`. Herdr appends its
+normal zoom badge, so the tab bar reads `COPY Z`; the overlay pane title remains
+`Copy mode`. The previous tab name is restored on normal exit, including viewer
+errors, unless you manually renamed the tab in the meantime.
+
 No user configuration is changed automatically by this project.
 
 ## Controls
@@ -193,8 +198,9 @@ plugin logs. A killed action, failed viewer startup, or machine crash can leave
 snapshot files or viewer markers behind. After closing all plugin viewers, remove
 stale `snapshot-*.json` and `viewer-*` files from the plugin's state directory if
 needed. Forcibly closing/killing the viewer during history capture can prevent
-source-scroll restoration; normal quit and toggle wait for restoration. An abruptly
-killed viewer may require a terminal reset.
+source-scroll restoration or leave the tab named `COPY`; normal quit and toggle
+perform cleanup first. Rename the tab manually if a forced exit prevents name
+restoration. An abruptly killed viewer may require a terminal reset.
 
 For launch/capture errors, inspect `herdr plugin log list --plugin herdr-copy-motion`.
 If the server does not support ANSI reads or the overlay API, upgrade/restart the
