@@ -1,0 +1,21 @@
+id = "herdr-copy-motion"
+name = "Copy Motion"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Custom copy mode over a frozen ANSI cell snapshot"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release", "--locked"]
+
+[[actions]]
+id = "toggle"
+title = "Toggle custom copy mode"
+contexts = ["pane"]
+command = ["target/release/herdr-copy-motion", "toggle"]
+
+[[panes]]
+id = "viewer"
+title = "Copy mode"
+placement = "overlay"
+command = ["target/release/herdr-copy-motion", "view"]
