@@ -5,6 +5,27 @@ fn style_from_config(contents: &str) -> String {
 }
 
 #[test]
+fn backdrop_uses_a_muted_theme_foreground_in_addition_to_faint() {
+    for (config, expected) in [
+        (
+            "[theme.custom]\npanel_bg = '#303030'",
+            "22;2;38;2;106;106;106",
+        ),
+        (
+            "[theme.custom]\npanel_bg = '#ffffff'",
+            "22;2;38;2;184;184;184",
+        ),
+        ("[theme]\nname = 'terminal'", "22;2;90"),
+        (
+            "[theme.custom]\npanel_bg = 'reset'\nsurface_dim = 'reset'",
+            "22;2;90",
+        ),
+    ] {
+        assert_eq!(styles_from_config(config).backdrop, expected);
+    }
+}
+
+#[test]
 fn selection_uses_native_gray_tint_and_contrast() {
     assert_eq!(
         selection_style(Color::Rgb(48, 48, 48)),

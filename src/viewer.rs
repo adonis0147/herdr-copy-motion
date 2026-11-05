@@ -1,3 +1,4 @@
+mod jump;
 #[cfg(test)]
 mod tests;
 
@@ -95,9 +96,12 @@ struct Viewer {
     pending_g: bool,
     pending_find: Option<char>,
     last_find: Option<CharacterFind>,
+    jump: Option<jump::Jump>,
+    width: u16,
     height: u16,
     cursor_style: String,
     selection_style: String,
+    backdrop_style: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +133,7 @@ impl Viewer {
         Self {
             cursor: (snapshot.viewport_top + snapshot.viewport_rows - 1, 0),
             offset: (0, snapshot.viewport_top),
+            width: snapshot.cols,
             height: snapshot.viewport_rows,
             snapshot,
             parser,
@@ -137,12 +142,17 @@ impl Viewer {
             pending_g: false,
             pending_find: None,
             last_find: None,
+            jump: None,
             cursor_style: styles.cursor,
             selection_style: styles.selection,
+            backdrop_style: styles.backdrop,
         }
     }
 
     fn input(&mut self, key: KeyEvent) -> Action {
+        if self.jump.is_some() {
+            return self.jump_input(key);
+        }
         if let Some(command) = self.pending_find.take() {
             self.pending_g = false;
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -235,6 +245,7 @@ impl Viewer {
                 KeyCode::Char('w') => self.word_motion(false, false),
                 KeyCode::Char('b') => self.word_motion(true, false),
                 KeyCode::Char('e') => self.word_motion(false, true),
+                KeyCode::Char('s') => self.jump = Some(jump::Jump::default()),
                 KeyCode::Char(command @ ('f' | 'F' | 't' | 'T')) => {
                     self.pending_find = Some(command);
                 }
@@ -265,6 +276,49 @@ impl Viewer {
             }
         }
         Action::Continue
+    }
+
+    fn jump_input(&mut self, key: KeyEvent) -> Action {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Action::Quit;
+        }
+        let jump = self.jump.as_mut().expect("active jump input");
+        match key.code {
+            KeyCode::Esc => self.jump = None,
+            KeyCode::Enter => {
+                if let Some(target) = jump.targets.first() {
+                    self.cursor = target.position;
+                }
+                self.jump = None;
+            }
+            KeyCode::Backspace => {
+                jump.pattern.pop();
+                self.update_jump();
+            }
+            KeyCode::Char(ch) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
+                if let Some(target) = jump.targets.iter().find(|target| target.label == Some(ch)) {
+                    self.cursor = target.position;
+                    self.jump = None;
+                } else {
+                    jump.pattern.push(ch);
+                    self.update_jump();
+                }
+            }
+            _ => {}
+        }
+        Action::Continue
+    }
+
+    fn update_jump(&mut self) {
+        if let Some(jump) = &mut self.jump {
+            jump.update(
+                self.parser.screen(),
+                self.snapshot.rows,
+                self.offset,
+                (self.width, self.height),
+                self.cursor,
+            );
+        }
     }
 
     fn find_character(&mut self, find: CharacterFind, repeat: bool) {
@@ -302,6 +356,7 @@ impl Viewer {
     }
 
     fn page(&mut self, delta: i32) {
+        self.jump = None;
         self.cursor.0 =
             (i32::from(self.cursor.0) + delta).clamp(0, i32::from(self.snapshot.rows - 1)) as u16;
         self.offset.1 = (i32::from(self.offset.1) + delta)
@@ -446,8 +501,13 @@ impl Viewer {
 
     fn draw(&mut self, output: &mut impl Write, size: (u16, u16)) -> io::Result<()> {
         if size.0 == 0 || size.1 == 0 {
+            self.jump = None;
             return Ok(());
         }
+        if size != (self.width, self.height) {
+            self.jump = None;
+        }
+        self.width = size.0;
         self.height = size.1;
         self.offset.1 = self.offset.1.min(self.snapshot.rows.saturating_sub(size.1));
         self.offset.0 = follow(self.cursor.1, self.offset.0, size.0);
@@ -462,6 +522,7 @@ impl Viewer {
             self.snapshot.cols,
             self.offset,
             size,
+            self.jump.as_ref().map(|_| self.backdrop_style.as_str()),
         ));
         for row in self.offset.1..self.snapshot.rows.min(self.offset.1.saturating_add(size.1)) {
             for col in self.offset.0..self.snapshot.cols.min(self.offset.0.saturating_add(size.0)) {
@@ -478,9 +539,14 @@ impl Viewer {
                     } else {
                         self.selection_style.as_str()
                     };
+                    let dim = if self.jump.is_some() && (row, col) != self.cursor {
+                        "\x1b[22;2m"
+                    } else {
+                        ""
+                    };
                     write!(
                         frame,
-                        "\x1b[{};{}H\x1b[{style}m{}\x1b[0m",
+                        "\x1b[{};{}H\x1b[{style}m{dim}{}\x1b[0m",
                         row - self.offset.1 + 1,
                         col - self.offset.0 + 1,
                         if cell.contents().is_empty() {
@@ -492,9 +558,69 @@ impl Viewer {
                 }
             }
         }
+        if let Some(jump) = &self.jump {
+            self.draw_jump(&mut frame, jump)?;
+        }
         frame.extend_from_slice(b"\x1b[?2026l");
         output.write_all(&frame)?;
         output.flush()
+    }
+
+    fn draw_jump(&self, frame: &mut Vec<u8>, jump: &jump::Jump) -> io::Result<()> {
+        let mut targets: Vec<_> = jump.targets.iter().collect();
+        targets.sort_by_key(|target| target.position);
+        let mut painted_row = None;
+        let mut painted_end = 0u16;
+        // Merge overlapping matches while painting so long repeated patterns stay linear.
+        for target in targets {
+            let (row, col) = target.position;
+            let first = if painted_row == Some(row) {
+                col.max(painted_end.saturating_add(1))
+            } else {
+                col
+            };
+            for col in first..=target.end {
+                let cell = self.cell(row, col);
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                write!(
+                    frame,
+                    "\x1b[{};{}H\x1b[{}m{}\x1b[0m",
+                    row - self.offset.1 + 1,
+                    col - self.offset.0 + 1,
+                    self.selection_style,
+                    if cell.contents().is_empty() {
+                        " "
+                    } else {
+                        cell.contents()
+                    }
+                )?;
+            }
+            painted_end = if painted_row == Some(row) {
+                painted_end.max(target.end)
+            } else {
+                target.end
+            };
+            painted_row = Some(row);
+        }
+        for target in &jump.targets {
+            let Some(label) = target.label else { continue };
+            let (row, col) = target.position;
+            write!(
+                frame,
+                "\x1b[{};{}H\x1b[{}m{label}{}\x1b[0m",
+                row - self.offset.1 + 1,
+                col - self.offset.0 + 1,
+                self.cursor_style,
+                if self.cell(row, col).is_wide() {
+                    " "
+                } else {
+                    ""
+                }
+            )?;
+        }
+        Ok(())
     }
 }
 

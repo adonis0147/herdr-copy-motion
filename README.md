@@ -8,6 +8,7 @@ mode or modify Herdr.
 
 - Toggle with `prefix+shift+s` after adding the documented keybinding.
 - Move with Vim keys or arrows; find characters with `f/F/t/T` and repeat with `;`/`,`.
+- Jump to visible text with `s`, a search pattern, and a displayed label, with a dimmed Flash-style backdrop.
 - Select characters with `v`, lines with `V`, or a rectangular block with Ctrl+V; copy with `y`/Enter.
 - Scroll captured history with PageUp/PageDown, Ctrl+B/F, Ctrl+U/D, or the wheel.
 - Collect beyond 1000 rows, within the viewer's coordinate and memory limits.

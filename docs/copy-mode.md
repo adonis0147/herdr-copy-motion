@@ -47,6 +47,7 @@ No user configuration is changed automatically by this project.
 | `f<char>` / `F<char>` | Find the next / previous occurrence on the current row |
 | `t<char>` / `T<char>` | Stop just before / after the next / previous occurrence |
 | `;` / `,` | Repeat the last character find in its original / opposite direction |
+| `s` | Start a Flash-style labeled jump within the visible viewport |
 | `0`, Home | First column |
 | `^` | First nonblank cell |
 | `$`, End | Last nonblank cell |
@@ -70,6 +71,34 @@ repeated `t`/`T` advances past the previous target rather than getting stuck bes
 it. These motions extend active selections and keep wide glyphs/combining marks
 intact; matching uses a cell's base character. Numeric counts and operator-pending
 commands are not implemented.
+
+### Flash-style jumps
+
+Press `s`, type a case-sensitive literal pattern, then press a displayed label to
+jump to that match. You can keep typing to narrow the search: label characters
+are excluded whenever they could continue any visible match. Enter jumps to the
+nearest match; Backspace edits the pattern; Escape cancels without moving the
+cursor or clearing the active selection. Ctrl+C still closes copy mode.
+
+During jump mode, snapshot text uses a muted, theme-derived foreground plus faint
+intensity for a stronger backdrop than faint alone. Existing selections are also
+faint, while matches remain at normal intensity and labels stay bold. Background
+colors and snapshot data are unchanged; original foregrounds and attributes return
+on jump, cancel, or resize. The faint component's strength depends on the attached
+terminal.
+
+Matches are highlighted and labels temporarily replace their first display cell.
+Nearest targets receive labels first, reusing labels while refining when possible.
+There are up to 52 single-letter labels; if a target has no label, narrow the
+pattern or use Enter. Labels never become part of copied text. A jump extends
+character, line, or block selections using the original snapshot cells.
+
+Only fully visible glyphs on the current viewport are searched, without matching
+across captured rows. Resize or mouse-wheel paging cancels jump mode. This is a
+standalone jump feature inspired by [flash.nvim](https://github.com/folke/flash.nvim),
+not its regex/fuzzy search, Treesitter, or cross-window integration.
+
+### Cursor and rendering
 
 Known limitation: the cursor currently starts at the bottom-left of the original
 viewport, not at the source application's current cursor. Herdr 0.9.5's plugin API
@@ -178,6 +207,7 @@ Herdr server; do not switch to a text-only export.
 - `src/history.rs`: hidden-source paging and scroll restoration.
 - `src/snapshot.rs`: snapshot validation, memory limits, and styled rendering.
 - `src/viewer.rs`: terminal setup, motions, selection, and display.
+- `src/viewer/jump.rs`: visible literal matching and collision-free jump labels.
 - `src/theme.rs`: native copy-mode color rules using the locally configured palette.
 
 Larger unit-test modules live in `src/<module>/tests.rs`; `tests/plugin.rs` tests

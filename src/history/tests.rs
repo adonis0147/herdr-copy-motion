@@ -46,6 +46,7 @@ fn hidden_history_capture_exceeds_1000_rows_without_duplicates_and_restores_scro
                 expanded.cols,
                 (0, 0),
                 (expanded.cols, expanded.rows),
+                None,
             ),
             expanded.rows,
             expanded.cols,

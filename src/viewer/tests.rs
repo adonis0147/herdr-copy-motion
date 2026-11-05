@@ -1,3 +1,5 @@
+mod flash;
+
 use super::*;
 
 fn viewer(ansi: &str, rows: u16, cols: u16) -> Viewer {

@@ -50,7 +50,7 @@ fn snapshot_validation_rejects_invalid_coordinates_and_oversized_grids() {
 #[test]
 fn renderer_stops_before_styles_below_the_viewport() {
     let ansi = "visible\n\x1b[31mbelow\n\x1b[32mstill below";
-    let output = snapshot::render(ansi, 20, (0, 0), (20, 1));
+    let output = snapshot::render(ansi, 20, (0, 0), (20, 1), None);
     assert!(!String::from_utf8_lossy(&output).contains("[31m"));
     assert_eq!(screen(&output, 1, 20).screen().contents(), "visible");
 }
@@ -59,7 +59,7 @@ fn renderer_stops_before_styles_below_the_viewport() {
 fn replay_preserves_every_exported_cell_including_colored_blanks() {
     let ansi = "\x1b[48;2;20;80;30m        \x1b[0m\r\n\x1b[1;3;4;38;2;100;200;150;48;5;22mtool    \x1b[0m\r\n\x1b[7m界e\u{301}     \x1b[0m";
     let original = screen(ansi.as_bytes(), 3, 8);
-    let rendered = snapshot::render(ansi, 8, (0, 0), (8, 3));
+    let rendered = snapshot::render(ansi, 8, (0, 0), (8, 3), None);
     let replay = screen(&rendered, 3, 8);
     for row in 0..3 {
         for col in 0..8 {
@@ -75,14 +75,14 @@ fn replay_preserves_every_exported_cell_including_colored_blanks() {
 #[test]
 fn renderer_forwards_styles_not_understood_by_the_motion_parser() {
     let ansi = "\x1b[9;4:3;58:2::20:80:30mtext\x1b[0m";
-    let rendered = String::from_utf8(snapshot::render(ansi, 20, (0, 0), (20, 3))).unwrap();
+    let rendered = String::from_utf8(snapshot::render(ansi, 20, (0, 0), (20, 3), None)).unwrap();
     assert!(rendered.contains("\x1b[9;4:3;58:2:0:20:80:30m"));
 }
 
 #[test]
 fn clipping_preserves_style_carried_from_hidden_rows() {
     let ansi = "\x1b[48;5;22mabcdefgh\r\n12345678\x1b[0m";
-    let replay = screen(&snapshot::render(ansi, 8, (2, 1), (4, 1)), 1, 4);
+    let replay = screen(&snapshot::render(ansi, 8, (2, 1), (4, 1), None), 1, 4);
     assert_eq!(replay.screen().contents().trim(), "3456");
     for col in 0..4 {
         assert_eq!(
@@ -95,7 +95,7 @@ fn clipping_preserves_style_carried_from_hidden_rows() {
 #[test]
 fn terminal_control_payloads_are_not_replayed() {
     let ansi = "a\x1b]52;c;c2VjcmV0\x07\x1b]0;title\x07\x1b[6nb";
-    let bytes = snapshot::render(ansi, 8, (0, 0), (8, 2));
+    let bytes = snapshot::render(ansi, 8, (0, 0), (8, 2), None);
     let output = String::from_utf8(bytes.clone()).unwrap();
     assert!(!output.contains("]52"));
     assert!(!output.contains("title"));
@@ -106,17 +106,60 @@ fn terminal_control_payloads_are_not_replayed() {
 #[test]
 fn resizing_does_not_reflow_captured_rows() {
     let ansi = "abcdefgh\r\n12345678";
-    let small = screen(&snapshot::render(ansi, 8, (0, 0), (4, 2)), 2, 4);
+    let small = screen(&snapshot::render(ansi, 8, (0, 0), (4, 2), None), 2, 4);
     assert_eq!(small.screen().contents().trim(), "abcd\n1234");
-    let wide = screen(&snapshot::render(ansi, 8, (0, 0), (12, 2)), 2, 12);
+    let wide = screen(&snapshot::render(ansi, 8, (0, 0), (12, 2), None), 2, 12);
     assert_eq!(wide.screen().contents().trim(), "abcdefgh\n12345678");
+}
+
+#[test]
+fn muted_backdrop_preserves_backgrounds_and_glyphs_across_sgr_resets() {
+    let ansi = "A\x1b[1;38;2;100;200;150;48;5;22m界e\u{301} \x1b[0mX\x1b[22mY";
+    let normal = screen(&snapshot::render(ansi, 8, (0, 0), (8, 1), None), 1, 8);
+    let dimmed = screen(
+        &snapshot::render(ansi, 8, (0, 0), (8, 1), Some("22;2;38;2;106;106;106")),
+        1,
+        8,
+    );
+    for col in 0..7 {
+        let original = normal.screen().cell(0, col).unwrap();
+        let faded = dimmed.screen().cell(0, col).unwrap();
+        assert_eq!(faded.contents(), original.contents());
+        assert_eq!(faded.bgcolor(), original.bgcolor());
+        if !original.is_wide_continuation() {
+            assert_eq!(faded.fgcolor(), vt100::Color::Rgb(106, 106, 106));
+            assert!(
+                faded.dim(),
+                "column {col} must remain dim after source SGR changes"
+            );
+            assert!(!faded.bold());
+        }
+    }
+}
+
+#[test]
+fn dim_backdrop_keeps_style_carried_from_clipped_rows() {
+    let ansi = "\x1b[1;38;5;12;48;5;22mabcdefgh\n12345678";
+    let replay = screen(
+        &snapshot::render(ansi, 8, (2, 1), (4, 1), Some("22;2;38;2;106;106;106")),
+        1,
+        4,
+    );
+    assert_eq!(replay.screen().contents(), "3456");
+    for col in 0..4 {
+        let cell = replay.screen().cell(0, col).unwrap();
+        assert!(cell.dim());
+        assert!(!cell.bold());
+        assert_eq!(cell.fgcolor(), vt100::Color::Rgb(106, 106, 106));
+        assert_eq!(cell.bgcolor(), vt100::Color::Idx(22));
+    }
 }
 
 #[test]
 fn history_pages_pad_blanks_and_preserve_styles() {
     assert_eq!(snapshot::page_rows("one\n", 3), "\x1b[0mone\n\n\x1b[0m");
     let ansi = snapshot::page_rows("\x1b[42m  \x1b[0m\nlast\n", 1);
-    let replay = screen(&snapshot::render(&ansi, 4, (0, 0), (4, 1)), 1, 4);
+    let replay = screen(&snapshot::render(&ansi, 4, (0, 0), (4, 1), None), 1, 4);
     assert_eq!(
         replay.screen().cell(0, 1).unwrap().bgcolor(),
         vt100::Color::Idx(2)

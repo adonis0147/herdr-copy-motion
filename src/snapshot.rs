@@ -12,7 +12,13 @@ pub(crate) const MAX_GRID_BYTES: usize = 128 * 1024 * 1024;
 
 /// Replay exported cells, not the text-only projection used for motions/copying.
 /// Forward every SGR parameter (including attributes our motion parser doesn't know).
-pub(crate) fn render(ansi: &str, cols: u16, offset: (u16, u16), size: (u16, u16)) -> Vec<u8> {
+pub(crate) fn render(
+    ansi: &str,
+    cols: u16,
+    offset: (u16, u16),
+    size: (u16, u16),
+    backdrop: Option<&str>,
+) -> Vec<u8> {
     let mut painter = Painter {
         output: String::from("\x1b[0m\x1b[2J\x1b[H"),
         x: 0,
@@ -21,13 +27,15 @@ pub(crate) fn render(ansi: &str, cols: u16, offset: (u16, u16), size: (u16, u16)
         offset,
         size,
         previous_visible: false,
+        backdrop,
     };
+    painter.apply_backdrop();
     let _ = vte::Parser::new().advance_until_terminated(&mut painter, ansi.as_bytes());
     painter.output.push_str("\x1b[0m");
     painter.output.into_bytes()
 }
 
-struct Painter {
+struct Painter<'a> {
     output: String,
     x: u16,
     y: u16,
@@ -35,9 +43,18 @@ struct Painter {
     offset: (u16, u16),
     size: (u16, u16),
     previous_visible: bool,
+    backdrop: Option<&'a str>,
 }
 
-impl vte::Perform for Painter {
+impl Painter<'_> {
+    fn apply_backdrop(&mut self) {
+        if let Some(style) = self.backdrop {
+            let _ = write!(self.output, "\x1b[{style}m");
+        }
+    }
+}
+
+impl vte::Perform for Painter<'_> {
     fn terminated(&self) -> bool {
         self.y >= self.offset.1.saturating_add(self.size.1)
     }
@@ -107,6 +124,8 @@ impl vte::Perform for Painter {
             }
         }
         self.output.push('m');
+        // Captured colors and intensity resets must not undo the temporary backdrop.
+        self.apply_backdrop();
     }
 }
 

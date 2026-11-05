@@ -17,6 +17,7 @@ use std::{env, fs, path::PathBuf};
 pub(crate) struct Styles {
     pub(crate) cursor: String,
     pub(crate) selection: String,
+    pub(crate) backdrop: String,
 }
 
 pub(crate) fn styles() -> Styles {
@@ -66,26 +67,20 @@ fn styles_from_config(contents: &str) -> Styles {
     } else {
         palette.panel_bg
     };
+    let muted = match selection_background(foreground) {
+        Color::Reset => Color::Ansi(8),
+        color => color,
+    };
     Styles {
         cursor: format!("1;{};{}", sgr(foreground, false), sgr(palette.accent, true)),
         selection: selection_style(foreground),
+        backdrop: format!("22;2;{}", sgr(muted, false)),
     }
 }
 
 fn selection_style(background: Color) -> String {
     // The host background isn't exported; use native's configured-palette fallback.
-    let background = match background {
-        Color::Rgb(r, g, b) => {
-            let target = if relative_luminance((r, g, b)) < 0.5 {
-                255.0
-            } else {
-                0.0
-            };
-            let mix = |value| (f32::from(value) + (target - f32::from(value)) * 0.28).round() as u8;
-            Color::Rgb(mix(r), mix(g), mix(b))
-        }
-        color => color,
-    };
+    let background = selection_background(background);
     let foreground = match background {
         Color::Rgb(r, g, b) => {
             let luminance = relative_luminance((r, g, b));
@@ -123,6 +118,21 @@ fn selection_style(background: Color) -> String {
         Color::Reset => Color::Reset,
     };
     format!("0;{};{}", sgr(foreground, false), sgr(background, true))
+}
+
+fn selection_background(background: Color) -> Color {
+    match background {
+        Color::Rgb(r, g, b) => {
+            let target = if relative_luminance((r, g, b)) < 0.5 {
+                255.0
+            } else {
+                0.0
+            };
+            let mix = |value| (f32::from(value) + (target - f32::from(value)) * 0.28).round() as u8;
+            Color::Rgb(mix(r), mix(g), mix(b))
+        }
+        color => color,
+    }
 }
 
 fn relative_luminance((r, g, b): (u8, u8, u8)) -> f32 {
